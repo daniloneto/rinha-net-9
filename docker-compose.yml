@@ -18,8 +18,7 @@ services:
           cpus: "0.3"
           memory: "50MB"
   rinha-gateway-1:
-    build:
-      context: ./gateway
+    image: daniloneto/rinha-gateway:latest
     container_name: rinha-gateway-1
     volumes:
       - sockets:/tmp:rw
@@ -38,8 +37,7 @@ services:
           memory: "125MB"
 
   rinha-gateway-2:
-    build:
-      context: ./gateway
+    image: daniloneto/rinha-gateway:latest
     container_name: rinha-gateway-2
     volumes:
       - sockets:/tmp:rw
@@ -57,8 +55,7 @@ services:
           cpus: "0.5"
           memory: "125MB"
   rinha-db:
-    build:
-      context: ./database
+    image: daniloneto/rinha-database:latest
     container_name: rinha-db
     volumes:
       - sockets:/sockets:rw

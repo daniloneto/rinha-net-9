@@ -13,3 +13,4 @@
 *.exe
 *.pdb
 /k6-v0.54.0-linux-amd64/
+publish.sh
