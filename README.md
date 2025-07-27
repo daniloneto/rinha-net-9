@@ -1,6 +1,6 @@
 # Rinha de Backend 2025
 
-Este projeto é uma implementação para a competição Rinha de Backend 2025, focada em performance, escalabilidade e boas práticas de desenvolvimento backend.
+Este projeto é uma implementação para a competição Rinha de Backend 2025 ( https://github.com/zanfranceschi/rinha-de-backend-2025 ) , focada em performance, escalabilidade e boas práticas de desenvolvimento backend.
 
 ## Estrutura do Projeto
 
