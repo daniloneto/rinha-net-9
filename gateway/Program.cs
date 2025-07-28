@@ -7,10 +7,8 @@ using Gateway;
 var builder = WebApplication.CreateBuilder(args);
 
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-ThreadPool.SetMinThreads(8, 8); 
-ThreadPool.SetMaxThreads(16, 16); 
 
-// Configure JSON options
+
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default);
@@ -18,10 +16,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 // Configure Kestrel for Unix socket
 builder.WebHost.ConfigureKestrel(options =>
-{    var socketPath = Environment.GetEnvironmentVariable("SOCKET_PATH") ?? "/tmp/gateway-1.sock";
-    
-    // Remove existing socket if it exists
-    try 
+{
+    var socketPath = Environment.GetEnvironmentVariable("SOCKET_PATH") ?? "/tmp/gateway-1.sock";
+
+    try
     {
         if (File.Exists(socketPath))
         {
@@ -30,32 +28,33 @@ builder.WebHost.ConfigureKestrel(options =>
     }
     catch
     {
-       
+
     }
-      options.ListenUnixSocket(socketPath);    
-    
+    options.ListenUnixSocket(socketPath);
+
     _ = Task.Run(async () =>
     {
         for (int i = 0; i < 10; i++)
         {
-            await Task.Delay(500); 
+            await Task.Delay(500);
             try
             {
                 if (File.Exists(socketPath))
-                {                    
+                {
                     var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                     {
                         FileName = "chmod",
                         Arguments = "666 " + socketPath,
                         UseShellExecute = false,
                         CreateNoWindow = true
-                    });                    process?.WaitForExit();
-                    
+                    }); process?.WaitForExit();
+
                     break;
                 }
-            }            catch
+            }
+            catch
             {
-               
+
             }
         }
     });
@@ -64,7 +63,7 @@ builder.WebHost.ConfigureKestrel(options =>
 var httpClient = new HttpClient(new SocketsHttpHandler
 {
     PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-    MaxConnectionsPerServer = 512 // Aumenta concorrência para stress máximo
+    MaxConnectionsPerServer = 512 
 });
 
 var dbHttpClient = new HttpClient(new UnixDomainSocketHttpHandler("/sockets/database.sock"))
@@ -105,7 +104,7 @@ app.MapGet("/payments-summary", async (DateTime? from, DateTime? to) =>
 
 var socketPath = Environment.GetEnvironmentVariable("SOCKET_PATH") ?? "/tmp/gateway-1.sock";
 if (File.Exists(socketPath) && OperatingSystem.IsLinux())
-{    
+{
     File.SetUnixFileMode(socketPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                                      UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
                                      UnixFileMode.OtherRead | UnixFileMode.OtherWrite);

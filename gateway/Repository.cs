@@ -45,7 +45,7 @@ public class Repository
             };
             var json = JsonSerializer.Serialize(dbRequest, AppJsonSerializerContext.Default.DatabasePaymentRequest);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            _httpClient.PostAsync("/payments/fallback", content); // fire-and-forget
+            _httpClient.PostAsync("/payments/fallback", content); 
             return await Task.FromResult(true);
         }
         catch
