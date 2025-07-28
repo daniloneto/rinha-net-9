@@ -7,8 +7,6 @@ using Gateway;
 var builder = WebApplication.CreateBuilder(args);
 
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-ThreadPool.SetMinThreads(8, 8); 
-ThreadPool.SetMaxThreads(16, 16); 
 
 // Configure JSON options
 builder.Services.ConfigureHttpJsonOptions(options =>
