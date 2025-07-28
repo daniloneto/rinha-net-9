@@ -1,5 +1,7 @@
 x-api_template: &api_template
-  image: daniloneto/rinha-gateway:latest
+  build:
+    context: ./gateway
+    dockerfile: Dockerfile
   volumes:
     - sockets:/tmp:rw
     - sockets:/sockets:rw
@@ -53,7 +55,9 @@ services:
       - rinha-db
       - rinha-gateway-1
   rinha-db:
-    image: daniloneto/rinha-database:latest
+    build:
+      context: ./database
+      dockerfile: Dockerfile
     container_name: rinha-db
     volumes:
       - sockets:/sockets:rw

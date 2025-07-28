@@ -1,44 +1,26 @@
 using System;
-using System.Collections.Concurrent;
-using System.Net.Sockets;
-using System.Runtime;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Runtime;
+using System.Net.Sockets;
+using System.Threading.Tasks;
 
 var builder = WebApplication.CreateBuilder(args);
 
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 ThreadPool.SetMinThreads(8, 8);
-ThreadPool.SetMaxThreads(16, 16); 
+ThreadPool.SetMaxThreads(16, 16);
 
-// Configure JSON options for AOT
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, DatabaseJsonSerializerContext.Default);
 });
 
-// Configure Kestrel for Unix socket
 builder.WebHost.ConfigureKestrel(options =>
 {
     var socketPath = Environment.GetEnvironmentVariable("SOCKET_PATH") ?? "/sockets/database.sock";
-
-    // Remove existing socket if it exists
-    try
-    {
-        if (File.Exists(socketPath))
-        {
-            File.Delete(socketPath);
-        }
-    }
-    catch
-    {
-        // Silent fail for production
-    }
-
+    try { if (File.Exists(socketPath)) File.Delete(socketPath); } catch { }
     options.ListenUnixSocket(socketPath);
-
-    // Set socket permissions after creation
     _ = Task.Run(async () =>
     {
         for (int i = 0; i < 10; i++)
@@ -54,100 +36,106 @@ builder.WebHost.ConfigureKestrel(options =>
                         Arguments = "666 " + socketPath,
                         UseShellExecute = false,
                         CreateNoWindow = true
-                    }); process?.WaitForExit();
-
+                    });
+                    process?.WaitForExit();
                     break;
                 }
             }
-            catch
-            {
-                // Silent fail for production
-            }
+            catch { }
         }
     });
 });
 
 var app = builder.Build();
-
 Console.WriteLine("C# Database Service");
 
-// In-memory storage (thread-safe)
-var defaultPayments = new ConcurrentQueue<PaymentRecord>();
-var fallbackPayments = new ConcurrentQueue<PaymentRecord>();
 
-// Endpoints
+
+var defaultPayments = new RingBuffer<PaymentRecord>(65536);
+var fallbackPayments = new RingBuffer<PaymentRecord>(65536);
+
 app.MapPost("/payments/default", (PaymentRecord payment) =>
 {
-    defaultPayments.Enqueue(payment);
-    return Results.Ok();
+    if (payment.Amount <= 0 || payment.RequestedAt == default)
+        return Results.BadRequest("'amount' deve ser positivo e 'requestedAt' deve ser uma data válida.");
+    try
+    {
+        defaultPayments.Enqueue(payment);
+        return Results.Created($"/payments/default/{Guid.NewGuid()}", null);
+    }
+    catch (Exception)
+    {
+        return Results.StatusCode(500);
+    }
 });
 
 app.MapPost("/payments/fallback", (PaymentRecord payment) =>
 {
-    fallbackPayments.Enqueue(payment);
-    return Results.Ok();
+    if (payment.Amount <= 0 || payment.RequestedAt == default)
+        return Results.BadRequest("'amount' deve ser positivo e 'requestedAt' deve ser uma data válida.");
+    try
+    {
+        fallbackPayments.Enqueue(payment);
+        return Results.Created($"/payments/fallback/{Guid.NewGuid()}", null);
+    }
+    catch (Exception)
+    {
+        return Results.StatusCode(500);
+    }
 });
 
 app.MapGet("/summary", (DateTime? from, DateTime? to) =>
 {
     var defaultList = defaultPayments.ToArray();
     var fallbackList = fallbackPayments.ToArray();
-
-    SummaryOrigin defaultSummary;
-    SummaryOrigin fallbackSummary;
-
+    int defaultRequests = 0;
+    double defaultAmount = 0.0;
+    int fallbackRequests = 0;
+    double fallbackAmount = 0.0;
     if (from.HasValue && to.HasValue)
     {
-        var filteredDefault = defaultList.Where(p => p.RequestedAt >= from && p.RequestedAt <= to);
-        var filteredFallback = fallbackList.Where(p => p.RequestedAt >= from && p.RequestedAt <= to);
-
-        var defaultTotal = filteredDefault.Sum(p => p.Amount);
-        var fallbackTotal = filteredFallback.Sum(p => p.Amount);
-
-        defaultSummary = new SummaryOrigin
-        {
-            TotalRequests = filteredDefault.Count(),
-            TotalAmount = Math.Round(defaultTotal * 100.0) / 100.0
-        };
-
-        fallbackSummary = new SummaryOrigin
-        {
-            TotalRequests = filteredFallback.Count(),
-            TotalAmount = Math.Round(fallbackTotal * 100.0) / 100.0
-        };
+        foreach (var p in defaultList)
+            if (p.RequestedAt >= from.Value && p.RequestedAt <= to.Value)
+            {
+                defaultRequests++;
+                defaultAmount += p.Amount;
+            }
+        foreach (var p in fallbackList)
+            if (p.RequestedAt >= from.Value && p.RequestedAt <= to.Value)
+            {
+                fallbackRequests++;
+                fallbackAmount += p.Amount;
+            }
     }
     else
     {
-        var defaultTotal = defaultList.Sum(p => p.Amount);
-        var fallbackTotal = fallbackList.Sum(p => p.Amount);
-
-        defaultSummary = new SummaryOrigin
-        {
-            TotalRequests = defaultList.Length,
-            TotalAmount = Math.Round(defaultTotal * 100.0) / 100.0
-        };
-
-        fallbackSummary = new SummaryOrigin
-        {
-            TotalRequests = fallbackList.Length,
-            TotalAmount = Math.Round(fallbackTotal * 100.0) / 100.0
-        };
+        defaultRequests = defaultList.Length;
+        defaultAmount = defaultList.Sum(p => p.Amount);
+        fallbackRequests = fallbackList.Length;
+        fallbackAmount = fallbackList.Sum(p => p.Amount);
     }
-
+    var defaultSummary = new SummaryOrigin
+    {
+        TotalRequests = defaultRequests,
+        TotalAmount = Math.Round(defaultAmount * 100.0) / 100.0
+    };
+    var fallbackSummary = new SummaryOrigin
+    {
+        TotalRequests = fallbackRequests,
+        TotalAmount = Math.Round(fallbackAmount * 100.0) / 100.0
+    };
     var response = new SummaryResponse
     {
         Default = defaultSummary,
         Fallback = fallbackSummary
     };
-
     return Results.Ok(response);
 });
 
 app.MapPost("/purge-payments", () =>
 {
-    // Clear all payments
-    while (defaultPayments.TryDequeue(out _)) { }
-    while (fallbackPayments.TryDequeue(out _)) { }
+    defaultPayments.Clear();
+    fallbackPayments.Clear();
     return Results.Ok();
 });
 
@@ -158,7 +146,6 @@ public sealed record PaymentRecord
 {
     [JsonPropertyName("amount")]
     public required double Amount { get; init; }
-
     [JsonPropertyName("requestedAt")]
     public required DateTime RequestedAt { get; init; }
 }
@@ -167,7 +154,6 @@ public sealed record SummaryResponse
 {
     [JsonPropertyName("default")]
     public required SummaryOrigin Default { get; init; }
-
     [JsonPropertyName("fallback")]
     public required SummaryOrigin Fallback { get; init; }
 }
@@ -176,12 +162,56 @@ public sealed record SummaryOrigin
 {
     [JsonPropertyName("totalRequests")]
     public required int TotalRequests { get; init; }
-
     [JsonPropertyName("totalAmount")]
     public required double TotalAmount { get; init; }
 }
+// RingBuffer lock-free para pagamentos
+public class RingBuffer<T>
+{
+    private readonly T[] _buffer;
+    private int _writeIndex = 0;
+    private int _count = 0;
+    private readonly int _capacity;
+    private readonly object _lock = new object();
 
-// JSON Source Generator for AOT
+    public RingBuffer(int capacity)
+    {
+        _capacity = capacity;
+        _buffer = new T[capacity];
+    }
+
+    public void Enqueue(T item)
+    {
+        lock (_lock)
+        {
+            _buffer[_writeIndex] = item;
+            _writeIndex = (_writeIndex + 1) % _capacity;
+            if (_count < _capacity) _count++;
+        }
+    }
+
+    public T[] ToArray()
+    {
+        lock (_lock)
+        {
+            T[] result = new T[_count];
+            int start = (_writeIndex - _count + _capacity) % _capacity;
+            for (int i = 0; i < _count; i++)
+                result[i] = _buffer[(start + i) % _capacity];
+            return result;
+        }
+    }
+
+    public void Clear()
+    {
+        lock (_lock)
+        {
+            _writeIndex = 0;
+            _count = 0;
+        }
+    }
+}
+
 [JsonSerializable(typeof(PaymentRecord))]
 [JsonSerializable(typeof(SummaryResponse))]
 [JsonSerializable(typeof(SummaryOrigin))]
@@ -189,5 +219,3 @@ public sealed record SummaryOrigin
 public partial class DatabaseJsonSerializerContext : JsonSerializerContext
 {
 }
-
-public partial class Program { }
