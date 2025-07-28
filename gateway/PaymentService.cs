@@ -36,7 +36,7 @@ namespace Gateway
                 }
             };
         }
-// Removido brace extra
+
         private readonly ConcurrentDictionary<Guid, int> _retryCounts = new();
         private readonly ProcessorClient _client;
         private readonly Repository _repository;
@@ -62,7 +62,7 @@ namespace Gateway
         {
             _client = client;
             _repository = repository;
-            // Troca para Channel unbounded para máxima concorrência
+            
             _channel = Channel.CreateUnbounded<PaymentRequest>(new UnboundedChannelOptions
             {
                 SingleReader = false,
@@ -70,7 +70,7 @@ namespace Gateway
             });
             _writer = _channel.Writer;
             _reader = _channel.Reader;
-            // Start health-check background tasks
+            
             _ = Task.Run(HealthCheckLoopDefault);
             _ = Task.Run(HealthCheckLoopFallback);
         }

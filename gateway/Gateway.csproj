@@ -36,8 +36,6 @@
     <RuntimeHostConfigurationOption Include="System.GC.Server" Value="true" />
     <RuntimeHostConfigurationOption Include="System.GC.Concurrent" Value="true" />
     <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="true" />
-    <RuntimeHostConfigurationOption Include="System.Threading.ThreadPool.MinThreads" Value="8" />
-    <RuntimeHostConfigurationOption Include="System.Threading.ThreadPool.MaxThreads" Value="32" />
   </ItemGroup>
 
 </Project>
