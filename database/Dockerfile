@@ -16,7 +16,9 @@ RUN dotnet publish Database.csproj -c Release -o /app/publish \
     --runtime linux-x64 \
     /p:PublishAot=true \
     /p:PublishTrimmed=true \
-    /p:StripSymbols=true
+    /p:StripSymbols=true \
+    /p:PublishReadyToRun=true \
+    /p:PublishProfileOptimization=true
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:9.0 AS runtime
 

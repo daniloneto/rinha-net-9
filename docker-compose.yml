@@ -1,3 +1,16 @@
+x-api_template: &api_template
+  image: daniloneto/rinha-gateway:latest
+  volumes:
+    - sockets:/tmp:rw
+    - sockets:/sockets:rw
+  networks:
+    - backend
+    - payment-processor
+  deploy:
+    resources:
+      limits:
+        cpus: "0.5"
+        memory: "115MB"
 services:
   nginx:
     image: nginx:1.29.0-alpine
@@ -15,45 +28,30 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.3"
-          memory: "50MB"
+          cpus: "0.2"
+          memory: "60MB"
   rinha-gateway-1:
-    image: daniloneto/rinha-gateway:latest
+    <<: *api_template
     container_name: rinha-gateway-1
-    volumes:
-      - sockets:/tmp:rw
-      - sockets:/sockets:rw
+    hostname: rinha-gateway-1
     environment:
       - SOCKET_PATH=/tmp/gateway-1.sock
-    networks:
-      - backend
-      - payment-processor
+    ports:
+      - "9001:9001"
     depends_on:
       - rinha-db
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "125MB"
 
   rinha-gateway-2:
-    image: daniloneto/rinha-gateway:latest
+    <<: *api_template
     container_name: rinha-gateway-2
-    volumes:
-      - sockets:/tmp:rw
-      - sockets:/sockets:rw
+    hostname: rinha-gateway-2
     environment:
       - SOCKET_PATH=/tmp/gateway-2.sock
-    networks:
-      - backend
-      - payment-processor
+    ports:
+      - "9002:9002"
     depends_on:
       - rinha-db
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "125MB"
+      - rinha-gateway-1
   rinha-db:
     image: daniloneto/rinha-database:latest
     container_name: rinha-db
@@ -66,8 +64,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.7"
-          memory: "300MB"
+          cpus: "0.3"
+          memory: "60MB"
 
 networks:
   backend:
