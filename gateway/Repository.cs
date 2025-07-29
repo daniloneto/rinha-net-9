@@ -25,8 +25,8 @@ public class Repository
             };
             var json = JsonSerializer.Serialize(dbRequest, AppJsonSerializerContext.Default.DatabasePaymentRequest);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            _httpClient.PostAsync("/payments/default", content); // fire-and-forget
-            return await Task.FromResult(true);
+            await _httpClient.PostAsync("/payments/default", content);
+            return true;
         }
         catch
         {           
@@ -45,8 +45,8 @@ public class Repository
             };
             var json = JsonSerializer.Serialize(dbRequest, AppJsonSerializerContext.Default.DatabasePaymentRequest);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            _httpClient.PostAsync("/payments/fallback", content); 
-            return await Task.FromResult(true);
+            await _httpClient.PostAsync("/payments/fallback", content);
+            return true;
         }
         catch
         {           

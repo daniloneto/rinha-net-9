@@ -38,6 +38,13 @@ services:
     hostname: rinha-gateway-1
     environment:
       - SOCKET_PATH=/tmp/gateway-1.sock
+      - MaxConnectionsPerServer=256 
+      - WorkerMultiplier=1
+      - RetryBaseDelayMs=200
+      - PooledConnectionLifetimeMinutes=5
+      - DbTimeoutSeconds=5
+      - RetryMaxDelayMs=1000
+      - HealthCheckIntervalSeconds=2
     ports:
       - "9001:9001"
     depends_on:
@@ -49,6 +56,13 @@ services:
     hostname: rinha-gateway-2
     environment:
       - SOCKET_PATH=/tmp/gateway-2.sock
+      - MaxConnectionsPerServer=256 
+      - WorkerMultiplier=1
+      - RetryBaseDelayMs=200
+      - PooledConnectionLifetimeMinutes=5
+      - DbTimeoutSeconds=5
+      - RetryMaxDelayMs=1000
+      - HealthCheckIntervalSeconds=2
     ports:
       - "9002:9002"
     depends_on:
@@ -63,6 +77,7 @@ services:
       - sockets:/sockets:rw
     environment:
       - SOCKET_PATH=/sockets/database.sock
+      - MaxCapacity=100000    
     networks:
       - backend
     deploy:
