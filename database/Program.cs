@@ -48,7 +48,9 @@ builder.WebHost.ConfigureKestrel(options => {
 var app = builder.Build();
 Console.WriteLine("C# Database Service");
 
-var paymentService = new PaymentService(100_000);
+var maxCapacity = 100_000;
+
+var paymentService = new PaymentService(maxCapacity);
 
 app.MapPost("/payments/default", (PaymentRecord payment) => ProcessPayment(payment, isFallback: false));
 app.MapPost("/payments/fallback", (PaymentRecord payment) => ProcessPayment(payment, isFallback: true));
@@ -111,8 +113,8 @@ public sealed record SummaryOrigin
 
 public sealed class PaymentService
 {
-    private readonly ConcurrentQueue<PaymentRecord> _defaultPayments = new();
-    private readonly ConcurrentQueue<PaymentRecord> _fallbackPayments = new();
+    private readonly ConcurrentQueue<PaymentRecord> _defaultPayments;
+    private readonly ConcurrentQueue<PaymentRecord> _fallbackPayments;
     private readonly int _maxCapacity;
 
     // Contadores e agregadores atômicos para default
@@ -123,7 +125,12 @@ public sealed class PaymentService
     private int _fallbackCount = 0;
     private long _fallbackTotalAmountAsCents = 0;
 
-    public PaymentService(int maxCapacity) => _maxCapacity = maxCapacity;
+    public PaymentService(int maxCapacity)
+    {
+        _maxCapacity = maxCapacity;
+        _defaultPayments = new ConcurrentQueue<PaymentRecord>();
+        _fallbackPayments = new ConcurrentQueue<PaymentRecord>();
+    }
 
     public bool AddPayment(PaymentRecord payment, bool isFallback)
     {
@@ -200,87 +207,7 @@ public sealed class PaymentService
         Volatile.Write(ref _fallbackTotalAmountAsCents, 0);
     }
 }
-public sealed class PaymentStorage
-{
-    private readonly PaymentRecord[] _buffer;
-    private volatile int _head = 0;
-    private volatile int _count = 0;
-    private readonly int _capacity;
-    private readonly object _syncRoot = new();
-    private long _totalRequests = 0;
-    private long _totalAmount = 0;
 
-    public PaymentStorage(int capacity)
-    {
-        _capacity = capacity;
-        _buffer = new PaymentRecord[capacity];
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryAdd(PaymentRecord item)
-    {
-        lock (_syncRoot)
-        {
-            if (_count == _capacity)
-                return false;
-
-            _buffer[_head] = item;
-            _head = (_head + 1) % _capacity;
-            _count++;
-            
-            Interlocked.Increment(ref _totalRequests);
-            Interlocked.Add(ref _totalAmount, (long)(item.Amount * 100));
-            return true;
-        }
-    }
-
-    public SummaryOrigin GetSummary(DateTime? from, DateTime? to)
-    {
-        // Caso sem filtro - uso de contadores atômicos
-        if (!from.HasValue && !to.HasValue)
-        {
-            return new SummaryOrigin {
-                TotalRequests = (int)Interlocked.Read(ref _totalRequests),
-                TotalAmount = Interlocked.Read(ref _totalAmount) / 100.0
-            };
-        }
-
-        // Caso com filtro - processamento otimizado
-        int totalRequests = 0;
-        long totalAmount = 0;
-        
-        lock (_syncRoot)
-        {
-            int start = (_head - _count + _capacity) % _capacity;
-            for (int i = 0; i < _count; i++)
-            {
-                var payment = _buffer[(start + i) % _capacity];
-                if (payment.RequestedAt >= from.GetValueOrDefault() && payment.RequestedAt <= to.GetValueOrDefault())
-                {
-                    totalRequests++;
-                    totalAmount += (long)(payment.Amount * 100);
-                }
-            }
-        }
-
-        return new SummaryOrigin {
-            TotalRequests = totalRequests,
-            TotalAmount = totalAmount / 100.0
-        };
-    }
-
-    public void Clear()
-    {
-        lock (_syncRoot)
-        {
-            Array.Clear(_buffer, 0, _buffer.Length);
-            _head = 0;
-            _count = 0;
-            Interlocked.Exchange(ref _totalRequests, 0);
-            Interlocked.Exchange(ref _totalAmount, 0);
-        }
-    }
-}
 
 [JsonSerializable(typeof(PaymentRecord))]
 [JsonSerializable(typeof(SummaryResponse))]

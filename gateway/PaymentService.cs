@@ -58,11 +58,26 @@ namespace Gateway
         private double _fallbackAmountSum = 0;
         private readonly object _fallbackAmountLock = new();
 
-        public PaymentService(ProcessorClient client, Repository repository)
+        private readonly int _workerMultiplier;
+        private readonly int _retryBaseDelayMs;
+        private readonly int _retryMaxDelayMs;
+        private readonly int _healthCheckIntervalSeconds;
+
+        public PaymentService(
+            ProcessorClient client,
+            Repository repository,
+            int workerMultiplier,
+            int retryBaseDelayMs,
+            int retryMaxDelayMs,
+            int healthCheckIntervalSeconds)
         {
             _client = client;
             _repository = repository;
-            
+            _workerMultiplier = workerMultiplier;
+            _retryBaseDelayMs = retryBaseDelayMs;
+            _retryMaxDelayMs = retryMaxDelayMs;
+            _healthCheckIntervalSeconds = healthCheckIntervalSeconds;
+
             _channel = Channel.CreateUnbounded<PaymentRequest>(new UnboundedChannelOptions
             {
                 SingleReader = false,
@@ -70,7 +85,7 @@ namespace Gateway
             });
             _writer = _channel.Writer;
             _reader = _channel.Reader;
-            
+
             _ = Task.Run(HealthCheckLoopDefault);
             _ = Task.Run(HealthCheckLoopFallback);
         }
@@ -78,7 +93,7 @@ namespace Gateway
     {
         while (true)
         {
-            if ((DateTime.UtcNow - _lastDefaultHealthCheck).TotalSeconds >= 5)
+            if ((DateTime.UtcNow - _lastDefaultHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
             {
                 try
                 {
@@ -97,7 +112,7 @@ namespace Gateway
     {
         while (true)
         {
-            if ((DateTime.UtcNow - _lastFallbackHealthCheck).TotalSeconds >= 5)
+            if ((DateTime.UtcNow - _lastFallbackHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
             {
                 try
                 {
@@ -161,7 +176,7 @@ namespace Gateway
                     {
                         retryCount++;
                         _retryCounts[request.CorrelationId] = retryCount;
-                        int delayMs = Math.Min(100 * (1 << Math.Min(retryCount, 5)), 1000); // Exponential backoff, max 1s
+                        int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs); // Exponential backoff, max configurable
                         await Task.Delay(delayMs);
                         _queue.Enqueue(request);
                     }
@@ -181,7 +196,7 @@ namespace Gateway
 
         public void InitializeWorkers()
     {
-        int workerCount = Environment.ProcessorCount * 2;
+        int workerCount = Environment.ProcessorCount * _workerMultiplier;
         for (int i = 0; i < workerCount; i++)
         {
             _ = Task.Run(async () =>
@@ -223,7 +238,7 @@ namespace Gateway
                     {
                         retryCount++;
                         _retryCounts[request.CorrelationId] = retryCount;
-                        int delayMs = Math.Min(100 * (1 << Math.Min(retryCount, 5)), 1000);
+                        int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs);
                         await Task.Delay(delayMs);
                         _queue.Enqueue(request);
                     }
