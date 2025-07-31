@@ -56,10 +56,7 @@ app.MapPost("/payments/default", (PaymentRecord payment) => ProcessPayment(payme
 app.MapPost("/payments/fallback", (PaymentRecord payment) => ProcessPayment(payment, isFallback: true));
 
 IResult ProcessPayment(PaymentRecord payment, bool isFallback)
-{
-    if (payment.Amount <= 0 || payment.RequestedAt == default)
-        return Results.BadRequest("'amount' deve ser positivo e 'requestedAt' deve ser uma data válida.");
-    
+{    
     return paymentService.AddPayment(payment, isFallback)
         ? Results.Created()        
         : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
@@ -83,7 +80,6 @@ app.MapPost("/purge-payments", () => {
 
 await app.RunAsync();
 
-// Classes otimizadas
 public sealed record PaymentRecord
 {
     [JsonPropertyName("amount")]
@@ -117,11 +113,27 @@ public sealed class PaymentService
     private readonly ConcurrentQueue<PaymentRecord> _fallbackPayments;
     private readonly int _maxCapacity;
 
-    // Contadores e agregadores atômicos para default
+    private sealed class AtomicBucket
+    {
+        private int _count;
+        private double _amount;
+        public void Add(double amount)
+        {
+            Interlocked.Increment(ref _count);
+            double initial, computed;
+            do
+            {
+                initial = _amount;
+                computed = initial + amount;
+            } while (Interlocked.CompareExchange(ref _amount, computed, initial) != initial);
+        }
+        public int Count => _count;
+        public double Amount => _amount;
+    }
+    private readonly ConcurrentDictionary<long, AtomicBucket> _defaultAgg = new();
+    private readonly ConcurrentDictionary<long, AtomicBucket> _fallbackAgg = new();
     private int _defaultCount = 0;
     private long _defaultTotalAmountAsCents = 0;
-
-    // Contadores e agregadores atômicos para fallback
     private int _fallbackCount = 0;
     private long _fallbackTotalAmountAsCents = 0;
 
@@ -134,48 +146,65 @@ public sealed class PaymentService
 
     public bool AddPayment(PaymentRecord payment, bool isFallback)
     {
-        // Escolhe as variáveis atômicas corretas para trabalhar
         ref int count = ref isFallback ? ref _fallbackCount : ref _defaultCount;
         ref long totalAmount = ref isFallback ? ref _fallbackTotalAmountAsCents : ref _defaultTotalAmountAsCents;
         var queue = isFallback ? _fallbackPayments : _defaultPayments;
 
-        // 1. Verifica a capacidade de forma LOCK-FREE
         if (Interlocked.Increment(ref count) > _maxCapacity)
         {
             Interlocked.Decrement(ref count); // Desfaz a contagem
             return false;
         }
 
-        // 2. Adiciona à fila concorrente (operação otimizada e paralelizável)
         queue.Enqueue(payment);
 
-        // 3. Atualiza o valor total de forma LOCK-FREE
         Interlocked.Add(ref totalAmount, (long)(payment.Amount * 100));
+
+        var minute = new DateTime(payment.RequestedAt.Year, payment.RequestedAt.Month, payment.RequestedAt.Day, payment.RequestedAt.Hour, payment.RequestedAt.Minute, 0, DateTimeKind.Utc).Ticks;
+        var dict = isFallback ? _fallbackAgg : _defaultAgg;
+        var bucket = dict.GetOrAdd(minute, _ => new AtomicBucket());
+        bucket.Add(payment.Amount);
 
         return true;
     }
 
     public (SummaryOrigin Default, SummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
-    {
-        // Cenário sem filtro: usa os agregadores atômicos. Extremamente rápido e O(1).
-        if (!from.HasValue && !to.HasValue)
+    {        
+
+        var fromUtc = from!.Value.ToUniversalTime();
+        var toUtc = to!.Value.ToUniversalTime();
+        var fromMinute = new DateTime(fromUtc.Year, fromUtc.Month, fromUtc.Day, fromUtc.Hour, fromUtc.Minute, 0, DateTimeKind.Utc).Ticks;
+        var toMinute = new DateTime(toUtc.Year, toUtc.Month, toUtc.Day, toUtc.Hour, toUtc.Minute, 0, DateTimeKind.Utc).Ticks;
+
+        (int, double) SumHybrid(ConcurrentQueue<PaymentRecord> queue, ConcurrentDictionary<long, AtomicBucket> agg)
         {
-            return (
-                new SummaryOrigin {
-                    TotalRequests = Volatile.Read(ref _defaultCount),
-                    TotalAmount = Volatile.Read(ref _defaultTotalAmountAsCents) / 100.0
-                },
-                new SummaryOrigin {
-                    TotalRequests = Volatile.Read(ref _fallbackCount),
-                    TotalAmount = Volatile.Read(ref _fallbackTotalAmountAsCents) / 100.0
+            int totalCount = 0;
+            double totalAmount = 0;
+            foreach (var kv in agg)
+            {
+                if (kv.Key > fromMinute && kv.Key < toMinute)
+                {
+                    totalCount += kv.Value.Count;
+                    totalAmount += kv.Value.Amount;
                 }
-            );
+            }
+            foreach (var p in queue)
+            {
+                var minute = new DateTime(p.RequestedAt.Year, p.RequestedAt.Month, p.RequestedAt.Day, p.RequestedAt.Hour, p.RequestedAt.Minute, 0, DateTimeKind.Utc).Ticks;
+                if ((minute == fromMinute || minute == toMinute) && p.RequestedAt >= fromUtc && p.RequestedAt <= toUtc)
+                {
+                    totalCount++;
+                    totalAmount += p.Amount;
+                }
+            }
+            return (totalCount, totalAmount);
         }
-        
-        // Cenário com filtro: percorre as filas. Inevitavelmente mais lento, mas sem locks globais.
+
+        var (defaultCount, defaultAmount) = SumHybrid(_defaultPayments, _defaultAgg);
+        var (fallbackCount, fallbackAmount) = SumHybrid(_fallbackPayments, _fallbackAgg);
         return (
-            ProcessQueueWithFilter(_defaultPayments, from!.Value, to!.Value),
-            ProcessQueueWithFilter(_fallbackPayments, from!.Value, to!.Value)
+            new SummaryOrigin { TotalRequests = defaultCount, TotalAmount = Math.Round(defaultAmount, 2) },
+            new SummaryOrigin { TotalRequests = fallbackCount, TotalAmount = Math.Round(fallbackAmount, 2) }
         );
     }
 
@@ -184,7 +213,6 @@ public sealed class PaymentService
         int totalRequests = 0;
         double totalAmount = 0.0;
         
-        // A iteração sobre ConcurrentQueue é thread-safe.
         foreach (var p in queue)
         {
             if (p.RequestedAt >= from && p.RequestedAt <= to)
@@ -200,7 +228,8 @@ public sealed class PaymentService
     {
         _defaultPayments.Clear();
         _fallbackPayments.Clear();
-        
+        _defaultAgg.Clear();
+        _fallbackAgg.Clear();
         Volatile.Write(ref _defaultCount, 0);
         Volatile.Write(ref _defaultTotalAmountAsCents, 0);
         Volatile.Write(ref _fallbackCount, 0);

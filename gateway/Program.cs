@@ -120,5 +120,3 @@ if (File.Exists(socketPath) && OperatingSystem.IsLinux())
 }
 
 await app.RunAsync();
-
-public partial class Program { }

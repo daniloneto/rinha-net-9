@@ -5,37 +5,7 @@ using System.Threading.Channels;
 namespace Gateway
 {
     public class PaymentService
-   
     {
-
-        public SummaryResponse GetSummary()
-        {
-            int defaultCount, fallbackCount;
-            double defaultAmount, fallbackAmount;
-            lock (_defaultAmountLock)
-            {
-                defaultCount = _defaultSuccessCount;
-                defaultAmount = _defaultAmountSum;
-            }
-            lock (_fallbackAmountLock)
-            {
-                fallbackCount = _fallbackSuccessCount;
-                fallbackAmount = _fallbackAmountSum;
-            }
-            return new SummaryResponse
-            {
-                Default = new SummaryOrigin
-                {
-                    TotalRequests = defaultCount,
-                    TotalAmount = defaultAmount
-                },
-                Fallback = new SummaryOrigin
-                {
-                    TotalRequests = fallbackCount,
-                    TotalAmount = fallbackAmount
-                }
-            };
-        }
 
         private readonly ConcurrentDictionary<Guid, int> _retryCounts = new();
         private readonly ProcessorClient _client;
@@ -46,17 +16,11 @@ namespace Gateway
         private ServiceHealthResponse? _fallbackHealthCache;
         private DateTime _lastDefaultHealthCheck = DateTime.MinValue;
         private DateTime _lastFallbackHealthCheck = DateTime.MinValue;
-        
+
         private readonly ConcurrentQueue<PaymentRequest> _queue = new();
         private readonly Channel<PaymentRequest> _channel;
         private readonly ChannelWriter<PaymentRequest> _writer;
-        private readonly ChannelReader<PaymentRequest> _reader;
-        private int _defaultSuccessCount = 0;
-        private double _defaultAmountSum = 0;
-        private readonly object _defaultAmountLock = new();
-        private int _fallbackSuccessCount = 0;
-        private double _fallbackAmountSum = 0;
-        private readonly object _fallbackAmountLock = new();
+        private readonly ChannelReader<PaymentRequest> _reader;        
 
         private readonly int _workerMultiplier;
         private readonly int _retryBaseDelayMs;
@@ -90,162 +54,142 @@ namespace Gateway
             _ = Task.Run(HealthCheckLoopFallback);
         }
         private async Task HealthCheckLoopDefault()
-    {
-        while (true)
         {
-            if ((DateTime.UtcNow - _lastDefaultHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
+            while (true)
             {
-                try
+                if ((DateTime.UtcNow - _lastDefaultHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
                 {
-                    var health = await _client.GetHealthAsync(Constants.DefaultProcessorUrl.Replace("/payments", "/payments/service-health"));
-                    _defaultHealthCache = health;
-                    _defaultHealth = !health.Failing;
+                    try
+                    {
+                        var health = await _client.GetHealthAsync(Constants.DefaultProcessorUrl.Replace("/payments", "/payments/service-health"));
+                        _defaultHealthCache = health;
+                        _defaultHealth = !health.Failing;
+                    }
+                    catch { }
+                    _lastDefaultHealthCheck = DateTime.UtcNow;
                 }
-                catch { }
-                _lastDefaultHealthCheck = DateTime.UtcNow;
+                await Task.Delay(1000);
             }
-            await Task.Delay(1000);
         }
-    }
 
         private async Task HealthCheckLoopFallback()
-    {
-        while (true)
         {
-            if ((DateTime.UtcNow - _lastFallbackHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
+            while (true)
             {
-                try
+                if ((DateTime.UtcNow - _lastFallbackHealthCheck).TotalSeconds >= _healthCheckIntervalSeconds)
                 {
-                    var health = await _client.GetHealthAsync(Constants.FallbackProcessorUrl.Replace("/payments", "/payments/service-health"));
-                    _fallbackHealthCache = health;
-                    _fallbackHealth = !health.Failing;
+                    try
+                    {
+                        var health = await _client.GetHealthAsync(Constants.FallbackProcessorUrl.Replace("/payments", "/payments/service-health"));
+                        _fallbackHealthCache = health;
+                        _fallbackHealth = !health.Failing;
+                    }
+                    catch { }
+                    _lastFallbackHealthCheck = DateTime.UtcNow;
                 }
-                catch { }
-                _lastFallbackHealthCheck = DateTime.UtcNow;
+                await Task.Delay(1000);
             }
-            await Task.Delay(1000);
         }
-    }
 
         public void Submit(PaymentRequest request)
-    {
-        _writer.TryWrite(request);
-    }
+        {
+            _writer.TryWrite(request);
+        }
 
         public void InitializeDispatcher()
-    {
-        _ = Task.Run(async () =>
-        {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-            while (await timer.WaitForNextTickAsync())
-            {
-                if (_queue.TryDequeue(out var request))
-                {
-                    var processorRequest = request.ToProcessor();
-                    bool success = false;
-                    int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);
-                    if (_defaultHealth)
-                    {
-                        success = await _client.CaptureDefaultAsync(processorRequest);
-                        if (success)
-                        {
-                            _ = _repository.InsertDefaultAsync(processorRequest);
-                            _retryCounts.TryRemove(request.CorrelationId, out _);
-                            System.Threading.Interlocked.Increment(ref _defaultSuccessCount);
-                            lock (_defaultAmountLock)
-                            {
-                                _defaultAmountSum += processorRequest.Amount;
-                            }
-                        }
-                    }
-                    if (!success && _fallbackHealth)
-                    {
-                        success = await _client.CaptureFallbackAsync(processorRequest);
-                        if (success)
-                        {
-                            _ = _repository.InsertFallbackAsync(processorRequest);
-                            _retryCounts.TryRemove(request.CorrelationId, out _);
-                            System.Threading.Interlocked.Increment(ref _fallbackSuccessCount);
-                            lock (_fallbackAmountLock)
-                            {
-                                _fallbackAmountSum += processorRequest.Amount;
-                            }
-                        }
-                    }
-                    if (!success)
-                    {
-                        retryCount++;
-                        _retryCounts[request.CorrelationId] = retryCount;
-                        int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs); // Exponential backoff, max configurable
-                        await Task.Delay(delayMs);
-                        _queue.Enqueue(request);
-                    }
-                    else
-                    {
-                        // Process queue in batch
-                        while (_queue.TryDequeue(out var queuedItem))
-                        {
-                            if (!_writer.TryWrite(queuedItem))
-                                break;
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-        public void InitializeWorkers()
-    {
-        int workerCount = Environment.ProcessorCount * _workerMultiplier;
-        for (int i = 0; i < workerCount; i++)
         {
             _ = Task.Run(async () =>
             {
-                await foreach (var request in _reader.ReadAllAsync())
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+                while (await timer.WaitForNextTickAsync())
                 {
-                    var processorRequest = request.ToProcessor();
-                    bool success = false;
-                    int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);                    
-                    if (_defaultHealth)
+                    if (_queue.TryDequeue(out var request))
                     {
-                        success = await _client.CaptureDefaultAsync(processorRequest);                        
-                        if (success)
+                        var processorRequest = request.ToProcessor();
+                        bool success = false;
+                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);
+                        if (_defaultHealth)
                         {
-                            _ = _repository.InsertDefaultAsync(processorRequest);
-                            _retryCounts.TryRemove(request.CorrelationId, out _);
-                            System.Threading.Interlocked.Increment(ref _defaultSuccessCount);
-                            lock (_defaultAmountLock)
+                            success = await _client.CaptureDefaultAsync(processorRequest);
+                            if (success)
                             {
-                                _defaultAmountSum += processorRequest.Amount;
+                                _ = _repository.InsertDefaultAsync(processorRequest);
+                                _retryCounts.TryRemove(request.CorrelationId, out _);
                             }
                         }
-                    }
-                    if (!success && _fallbackHealth)
-                    {
-                        success = await _client.CaptureFallbackAsync(processorRequest);                      
-                        if (success)
+                        if (!success && _fallbackHealth)
                         {
-                            _ = _repository.InsertFallbackAsync(processorRequest);
-                            _retryCounts.TryRemove(request.CorrelationId, out _);
-                            System.Threading.Interlocked.Increment(ref _fallbackSuccessCount);
-                            lock (_fallbackAmountLock)
+                            success = await _client.CaptureFallbackAsync(processorRequest);
+                            if (success)
                             {
-                                _fallbackAmountSum += processorRequest.Amount;
+                                _ = _repository.InsertFallbackAsync(processorRequest);
+                                _retryCounts.TryRemove(request.CorrelationId, out _);
                             }
                         }
-                    }
-                    if (!success)
-                    {
-                        retryCount++;
-                        _retryCounts[request.CorrelationId] = retryCount;
-                        int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs);
-                        await Task.Delay(delayMs);
-                        _queue.Enqueue(request);
+                        if (!success)
+                        {
+                            retryCount++;
+                            _retryCounts[request.CorrelationId] = retryCount;
+                            int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs); // Exponential backoff, max configurable
+                            await Task.Delay(delayMs);
+                            _queue.Enqueue(request);
+                        }
+                        else
+                        {
+                            // Process queue in batch
+                            while (_queue.TryDequeue(out var queuedItem))
+                            {
+                                if (!_writer.TryWrite(queuedItem))
+                                    break;
+                            }
+                        }
                     }
                 }
             });
-        }       
-    }
-   
+        }
+
+        public void InitializeWorkers()
+        {
+            int workerCount = Environment.ProcessorCount * _workerMultiplier;
+            for (int i = 0; i < workerCount; i++)
+            {
+                _ = Task.Run(async () =>
+                {
+                    await foreach (var request in _reader.ReadAllAsync())
+                    {
+                        var processorRequest = request.ToProcessor();
+                        bool success = false;
+                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);
+                        if (_defaultHealth)
+                        {
+                            success = await _client.CaptureDefaultAsync(processorRequest);
+                            if (success)
+                            {
+                                _ = _repository.InsertDefaultAsync(processorRequest);
+                                _retryCounts.TryRemove(request.CorrelationId, out _);
+                            }
+                        }
+                        if (!success && _fallbackHealth)
+                        {
+                            success = await _client.CaptureFallbackAsync(processorRequest);
+                            if (success)
+                            {
+                                _ = _repository.InsertFallbackAsync(processorRequest);
+                                _retryCounts.TryRemove(request.CorrelationId, out _);
+                            }
+                        }
+                        if (!success)
+                        {
+                            retryCount++;
+                            _retryCounts[request.CorrelationId] = retryCount;
+                            int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs);
+                            await Task.Delay(delayMs);
+                            _queue.Enqueue(request);
+                        }
+                    }
+                });
+            }
+        }
+
     }
 }
