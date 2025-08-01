@@ -21,9 +21,7 @@
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.35" />
-    <PackageReference Include="Npgsql" Version="8.0.5" />
+  <ItemGroup>    
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
     <PackageReference Include="UnixDomainSockets.HttpClient" Version="0.1.1" />
   </ItemGroup>

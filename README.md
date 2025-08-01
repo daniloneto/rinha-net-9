@@ -9,6 +9,9 @@ Este projeto é uma implementação para a competição Rinha de Backend 2025 ( 
 - **nginx.conf**: Configuração do proxy reverso NGINX.
 - **docker-compose.yml**: Orquestração dos serviços via Docker Compose.
 
+### Bibliotecas Utilizadas
+- **[UnixDomainSockets.HttpClient](https://github.com/daniloneto/unix-domain-sockets-httpclient)**: Biblioteca para comunicação via Unix Domain Sockets entre os serviços, otimizada para performance e compatível com AOT compilation.
+
 ## Como Executar
 
 ```sh
