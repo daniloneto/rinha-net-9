@@ -20,7 +20,7 @@ Este projeto é uma implementação para a competição Rinha de Backend 2025 ( 
 ### Bibliotecas Utilizadas
 - **[UnixDomainSockets.HttpClient](https://www.nuget.org/packages/UnixDomainSockets.HttpClient)**: Biblioteca para comunicação via Unix Domain Sockets entre os serviços, otimizada para performance e compatível com AOT compilation.
 - **[LockFree.EventStore v0.1.2](https://www.nuget.org/packages/LockFree.EventStore/)**: Event store em memória lock-free para armazenamento de alta performance com:
-  - Particionamento por chave (2 partições configuradas)
+  - Particionamento por chave (8 partições configuradas)
   - Agregações funcionais por janela temporal
   - Capacidade configurável (100.000 eventos)
   - Callbacks de observabilidade para eventos descartados
