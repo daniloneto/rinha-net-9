@@ -31,7 +31,14 @@ builder.WebHost.ConfigureKestrel(options =>
     {
 
     }
+    
     options.ListenUnixSocket(socketPath);
+
+    // Otimizações conservadoras de performance
+    options.Limits.MaxConcurrentConnections = 1000;
+    options.Limits.MaxRequestBodySize = 1024; // 1KB - payloads pequenos
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(30);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
 
     _ = Task.Run(async () =>
     {
