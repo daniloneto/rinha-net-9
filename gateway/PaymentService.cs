@@ -27,20 +27,23 @@ namespace Gateway
         private readonly int _retryMaxDelayMs;
         private readonly int _healthCheckIntervalSeconds;
 
+
         public PaymentService(
             ProcessorClient client,
-            Repository repository,
-            int workerMultiplier,
-            int retryBaseDelayMs,
-            int retryMaxDelayMs,
-            int healthCheckIntervalSeconds)
+            Repository repository)
         {
             _client = client;
             _repository = repository;
-            _workerMultiplier = workerMultiplier;
-            _retryBaseDelayMs = retryBaseDelayMs;
-            _retryMaxDelayMs = retryMaxDelayMs;
-            _healthCheckIntervalSeconds = healthCheckIntervalSeconds;
+            _workerMultiplier = int.TryParse(Environment.GetEnvironmentVariable("WorkerMultiplier"), out var wm) ? wm : 1;
+            _retryBaseDelayMs = int.TryParse(Environment.GetEnvironmentVariable("RetryBaseDelayMs"), out var rbd) ? rbd : 200;
+            _retryMaxDelayMs = int.TryParse(Environment.GetEnvironmentVariable("RetryMaxDelayMs"), out var rmd) ? rmd : 1000;
+            _healthCheckIntervalSeconds = int.TryParse(Environment.GetEnvironmentVariable("HealthCheckIntervalSeconds"), out var hcis) ? hcis : 2;
+
+            // Log dos valores das variáveis de ambiente
+            Console.WriteLine($"[PaymentService] WorkerMultiplier={_workerMultiplier}");
+            Console.WriteLine($"[PaymentService] RetryBaseDelayMs={_retryBaseDelayMs}");
+            Console.WriteLine($"[PaymentService] RetryMaxDelayMs={_retryMaxDelayMs}");
+            Console.WriteLine($"[PaymentService] HealthCheckIntervalSeconds={_healthCheckIntervalSeconds}");
 
             _channel = Channel.CreateUnbounded<PaymentRequest>(new UnboundedChannelOptions
             {

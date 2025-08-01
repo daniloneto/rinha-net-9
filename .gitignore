@@ -20,3 +20,4 @@ run_rinha.sh
 /results/
 move.ps1
 teste.sh
+docker-compose_local.yml

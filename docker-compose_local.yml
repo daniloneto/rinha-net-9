@@ -67,7 +67,6 @@ services:
       - "9002:9002"
     depends_on:
       - rinha-db
-      - rinha-gateway-1
   rinha-db:
     build:
       context: ./database
