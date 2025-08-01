@@ -16,3 +16,4 @@
 /results/
 *.ps1
 *.sh
+docker-compose_local.yml
