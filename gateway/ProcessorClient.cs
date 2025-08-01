@@ -58,4 +58,46 @@ public class ProcessorClient
         if (health == null) throw new Exception("Invalid health response");
         return health;
     }
+
+    /// <summary>
+    /// Executa warm-up das conexões HTTP realizando chamadas de health check
+    /// </summary>
+    public async Task WarmupAsync()
+    {
+        var warmupTasks = new[]
+        {
+            WarmupEndpoint(Constants.DefaultProcessorUrl.Replace("/payments", "/payments/service-health"), "Default"),
+            WarmupEndpoint(Constants.FallbackProcessorUrl.Replace("/payments", "/payments/service-health"), "Fallback")
+        };
+        
+        await Task.WhenAll(warmupTasks);
+    }
+
+    private async Task WarmupEndpoint(string healthUrl, string processorName)
+    {
+        const int maxAttempts = 3;
+        const int delayBetweenAttempts = 500; // ms
+        
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                var health = await GetHealthAsync(healthUrl);
+                Console.WriteLine($"[Warm-up] {processorName} conectado (Failing: {health.Failing}, MinResponseTime: {health.MinResponseTime}ms)");
+                break;
+            }
+            catch (Exception ex)
+            {
+                if (attempt < maxAttempts)
+                {
+                    Console.WriteLine($"[Warm-up] Tentativa {attempt} falhou para {processorName}, tentando novamente...");
+                    await Task.Delay(delayBetweenAttempts);
+                }
+                else
+                {
+                    Console.WriteLine($"[Warm-up] Falha ao conectar com {processorName}: {ex.Message}");
+                }
+            }
+        }
+    }
 }

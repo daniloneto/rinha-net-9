@@ -85,6 +85,22 @@ dbHttpClient.BaseAddress = new Uri("http://localhost/");
 var repository = new Repository(dbHttpClient);
 var controller = new Controller(repository);
 var processorClient = new ProcessorClient(httpClient);
+
+// Warm-up assíncrono das conexões HTTP para reduzir latência do cold start
+_ = Task.Run(async () =>
+{
+    try
+    {
+        Console.WriteLine("[Warm-up] Iniciando aquecimento das conexões HTTP...");
+        await processorClient.WarmupAsync();
+        Console.WriteLine("[Warm-up] Aquecimento concluído");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Warm-up] Erro durante aquecimento: {ex.Message}");
+    }
+});
+
 var paymentService = new PaymentService(processorClient, repository);
 
 var app = builder.Build();

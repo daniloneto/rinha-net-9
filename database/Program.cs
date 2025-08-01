@@ -77,6 +77,12 @@ IResult ProcessPayment(PaymentRecord payment, bool isFallback)
 
 app.MapGet("/summary", (DateTime? from, DateTime? to) =>
 {
+    // Se não vier filtro, retorna 200 vazio
+    if (!from.HasValue || !to.HasValue)
+    {
+        return Results.Ok();
+    }
+
     var (defaultSummary, fallbackSummary) = paymentService.GetSummary(from, to);
 
     var response = new SummaryResponse
