@@ -3,6 +3,7 @@ using System.Runtime;
 using System.Text.Json;
 using System;
 using Gateway;
+using UnixDomainSockets.HttpClient;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -61,13 +62,9 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 
 
-var maxConnectionsPerServer = 256;
-var pooledConnectionLifetimeMinutes = 5;
+var maxConnectionsPerServer = int.TryParse(Environment.GetEnvironmentVariable("MaxConnectionsPerServer"), out var mcs) ? mcs : 256;
+var pooledConnectionLifetimeMinutes = int.TryParse(Environment.GetEnvironmentVariable("PooledConnectionLifetimeMinutes"), out var pclm) ? pclm : 5;
 var dbTimeoutSeconds = 5;
-var workerMultiplier = 1;
-var retryBaseDelayMs = 200;
-var retryMaxDelayMs = 1000;
-var healthCheckIntervalSeconds = 2;
 
 var httpClient = new HttpClient(new SocketsHttpHandler
 {
@@ -75,16 +72,13 @@ var httpClient = new HttpClient(new SocketsHttpHandler
     MaxConnectionsPerServer = maxConnectionsPerServer
 });
 
-var dbHttpClient = new HttpClient(new UnixDomainSocketHttpHandler("/sockets/database.sock"))
-{
-    BaseAddress = new Uri("http://localhost/"),
-    Timeout = TimeSpan.FromSeconds(dbTimeoutSeconds)
-};
+var dbHttpClient = UnixHttpClientFactory.For("/sockets/database.sock", TimeSpan.FromSeconds(dbTimeoutSeconds));
+dbHttpClient.BaseAddress = new Uri("http://localhost/");
 
 var repository = new Repository(dbHttpClient);
 var controller = new Controller(repository);
 var processorClient = new ProcessorClient(httpClient);
-var paymentService = new PaymentService(processorClient, repository, workerMultiplier, retryBaseDelayMs, retryMaxDelayMs, healthCheckIntervalSeconds);
+var paymentService = new PaymentService(processorClient, repository);
 
 var app = builder.Build();
 

@@ -1,5 +1,5 @@
 x-api_template: &api_template
-  image: daniloneto/rinha-gateway:latest
+  image: daniloneto/rinha-gateway:1.1.0
   volumes:
     - sockets:/tmp:rw
     - sockets:/sockets:rw
@@ -51,9 +51,8 @@ services:
       - "9002:9002"
     depends_on:
       - rinha-db
-      - rinha-gateway-1
   rinha-db:
-    image: daniloneto/rinha-database:latest
+    image: daniloneto/rinha-database:1.1.0
     container_name: rinha-db
     volumes:
       - sockets:/sockets:rw
