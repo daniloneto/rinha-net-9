@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Collections.Concurrent;
+using LockFree.EventStore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,7 +49,7 @@ builder.WebHost.ConfigureKestrel(options => {
 var app = builder.Build();
 Console.WriteLine("C# Database Service");
 
-var maxCapacity = 100_000;
+var maxCapacity = 100_000; 
 
 var paymentService = new PaymentService(maxCapacity);
 
@@ -71,6 +72,11 @@ app.MapGet("/summary", (DateTime? from, DateTime? to) => {
     };
     
     return Results.Ok(response);
+});
+
+app.MapGet("/metrics", () => {
+    var metrics = paymentService.GetMetrics();
+    return Results.Ok(metrics);
 });
 
 app.MapPost("/purge-payments", () => {
@@ -107,139 +113,139 @@ public sealed record SummaryOrigin
     public required double TotalAmount { get; init; }
 }
 
+public sealed record MetricsResponse
+{
+    [JsonPropertyName("defaultStore")]
+    public required StoreMetrics DefaultStore { get; init; }
+    
+    [JsonPropertyName("fallbackStore")]
+    public required StoreMetrics FallbackStore { get; init; }
+}
+
+public sealed record StoreMetrics
+{
+    [JsonPropertyName("count")]
+    public required long Count { get; init; }
+    
+    [JsonPropertyName("capacity")]
+    public required int Capacity { get; init; }
+    
+    [JsonPropertyName("isEmpty")]
+    public required bool IsEmpty { get; init; }
+    
+    [JsonPropertyName("isFull")]
+    public required bool IsFull { get; init; }
+    
+    [JsonPropertyName("discardedEvents")]
+    public required long DiscardedEvents { get; init; }
+}
+
 public sealed class PaymentService
 {
-    private readonly ConcurrentQueue<PaymentRecord> _defaultPayments;
-    private readonly ConcurrentQueue<PaymentRecord> _fallbackPayments;
+    private EventStore<PaymentEvent> _defaultStore;
+    private EventStore<PaymentEvent> _fallbackStore;
     private readonly int _maxCapacity;
-
-    private sealed class AtomicBucket
-    {
-        private int _count;
-        private double _amount;
-        public void Add(double amount)
-        {
-            Interlocked.Increment(ref _count);
-            double initial, computed;
-            do
-            {
-                initial = _amount;
-                computed = initial + amount;
-            } while (Interlocked.CompareExchange(ref _amount, computed, initial) != initial);
-        }
-        public int Count => _count;
-        public double Amount => _amount;
-    }
-    private readonly ConcurrentDictionary<long, AtomicBucket> _defaultAgg = new();
-    private readonly ConcurrentDictionary<long, AtomicBucket> _fallbackAgg = new();
-    private int _defaultCount = 0;
-    private long _defaultTotalAmountAsCents = 0;
-    private int _fallbackCount = 0;
-    private long _fallbackTotalAmountAsCents = 0;
+    private static long _discardedEventsCount = 0;
 
     public PaymentService(int maxCapacity)
     {
-        _maxCapacity = maxCapacity;
-        _defaultPayments = new ConcurrentQueue<PaymentRecord>();
-        _fallbackPayments = new ConcurrentQueue<PaymentRecord>();
-    }
-
-    public bool AddPayment(PaymentRecord payment, bool isFallback)
-    {
-        ref int count = ref isFallback ? ref _fallbackCount : ref _defaultCount;
-        ref long totalAmount = ref isFallback ? ref _fallbackTotalAmountAsCents : ref _defaultTotalAmountAsCents;
-        var queue = isFallback ? _fallbackPayments : _defaultPayments;
-
-        if (Interlocked.Increment(ref count) > _maxCapacity)
+        _maxCapacity = maxCapacity;          
+        var options = new EventStoreOptions<PaymentEvent>
         {
-            Interlocked.Decrement(ref count); // Desfaz a contagem
-            return false;
-        }
+            Capacity = maxCapacity,
+            Partitions = 2, 
+            OnEventDiscarded = evt => {
+                Interlocked.Increment(ref _discardedEventsCount);
+            }
+        };
+        
+        _defaultStore = new EventStore<PaymentEvent>(options);
+        _fallbackStore = new EventStore<PaymentEvent>(options);
+    }    public bool AddPayment(PaymentRecord payment, bool isFallback)
+    {
+        
+        var paymentEvent = new PaymentEvent
+        {
+            Amount = payment.Amount,
+            RequestedAt = payment.RequestedAt.Kind == DateTimeKind.Utc 
+                ? payment.RequestedAt 
+                : payment.RequestedAt.ToUniversalTime()
+        };
 
-        queue.Enqueue(payment);
-
-        Interlocked.Add(ref totalAmount, (long)(payment.Amount * 100));
-
-        var minute = new DateTime(payment.RequestedAt.Year, payment.RequestedAt.Month, payment.RequestedAt.Day, payment.RequestedAt.Hour, payment.RequestedAt.Minute, 0, DateTimeKind.Utc).Ticks;
-        var dict = isFallback ? _fallbackAgg : _defaultAgg;
-        var bucket = dict.GetOrAdd(minute, _ => new AtomicBucket());
-        bucket.Add(payment.Amount);
-
-        return true;
+        var store = isFallback ? _fallbackStore : _defaultStore;
+        
+        // A EventStore tem descarte FIFO automático, então sempre retornamos true
+        // se conseguirmos adicionar o evento
+        return store.TryAppend(paymentEvent);
     }
 
     public (SummaryOrigin Default, SummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
-    {        
-
+    {
         var fromUtc = from!.Value.ToUniversalTime();
         var toUtc = to!.Value.ToUniversalTime();
-        var fromMinute = new DateTime(fromUtc.Year, fromUtc.Month, fromUtc.Day, fromUtc.Hour, fromUtc.Minute, 0, DateTimeKind.Utc).Ticks;
-        var toMinute = new DateTime(toUtc.Year, toUtc.Month, toUtc.Day, toUtc.Hour, toUtc.Minute, 0, DateTimeKind.Utc).Ticks;
 
-        (int, double) SumHybrid(ConcurrentQueue<PaymentRecord> queue, ConcurrentDictionary<long, AtomicBucket> agg)
-        {
-            int totalCount = 0;
-            double totalAmount = 0;
-            foreach (var kv in agg)
-            {
-                if (kv.Key > fromMinute && kv.Key < toMinute)
-                {
-                    totalCount += kv.Value.Count;
-                    totalAmount += kv.Value.Amount;
-                }
-            }
-            foreach (var p in queue)
-            {
-                var minute = new DateTime(p.RequestedAt.Year, p.RequestedAt.Month, p.RequestedAt.Day, p.RequestedAt.Hour, p.RequestedAt.Minute, 0, DateTimeKind.Utc).Ticks;
-                if ((minute == fromMinute || minute == toMinute) && p.RequestedAt >= fromUtc && p.RequestedAt <= toUtc)
-                {
-                    totalCount++;
-                    totalAmount += p.Amount;
-                }
-            }
-            return (totalCount, totalAmount);
-        }
+        var defaultSummary = CalculateSummary(_defaultStore, fromUtc, toUtc);
+        var fallbackSummary = CalculateSummary(_fallbackStore, fromUtc, toUtc);
 
-        var (defaultCount, defaultAmount) = SumHybrid(_defaultPayments, _defaultAgg);
-        var (fallbackCount, fallbackAmount) = SumHybrid(_fallbackPayments, _fallbackAgg);
-        return (
-            new SummaryOrigin { TotalRequests = defaultCount, TotalAmount = Math.Round(defaultAmount, 2) },
-            new SummaryOrigin { TotalRequests = fallbackCount, TotalAmount = Math.Round(fallbackAmount, 2) }
-        );
-    }
-
-    private SummaryOrigin ProcessQueueWithFilter(ConcurrentQueue<PaymentRecord> queue, DateTime from, DateTime to)
+        return (defaultSummary, fallbackSummary);
+    }    private SummaryOrigin CalculateSummary(EventStore<PaymentEvent> store, DateTime from, DateTime to)
     {
-        int totalRequests = 0;
-        double totalAmount = 0.0;
         
-        foreach (var p in queue)
-        {
-            if (p.RequestedAt >= from && p.RequestedAt <= to)
-            {
-                totalRequests++;
-                totalAmount += p.Amount;
-            }
-        }
-        return new SummaryOrigin { TotalRequests = totalRequests, TotalAmount = Math.Round(totalAmount * 100) / 100.0 };
-    }
+        var snapshot = store.Snapshot();
+        
+        
+        var filteredEvents = snapshot.Where(evt => 
+            evt.RequestedAt >= from && evt.RequestedAt <= to).ToList();
+            
+        var totalRequests = filteredEvents.Count;
+        var totalAmount = filteredEvents.Sum(evt => evt.Amount);
 
-    public void PurgePayments()
+        return new SummaryOrigin 
+        { 
+            TotalRequests = totalRequests, 
+            TotalAmount = Math.Round(totalAmount, 2) 
+        };
+    }public void PurgePayments()
     {
-        _defaultPayments.Clear();
-        _fallbackPayments.Clear();
-        _defaultAgg.Clear();
-        _fallbackAgg.Clear();
-        Volatile.Write(ref _defaultCount, 0);
-        Volatile.Write(ref _defaultTotalAmountAsCents, 0);
-        Volatile.Write(ref _fallbackCount, 0);
-        Volatile.Write(ref _fallbackTotalAmountAsCents, 0);
+        // Usando o novo método Clear() da v0.1.2!
+        _defaultStore.Clear();
+        _fallbackStore.Clear();
+    }    public MetricsResponse GetMetrics()
+    {
+        return new MetricsResponse
+        {
+            DefaultStore = new StoreMetrics
+            {
+                Count = _defaultStore.Count,
+                Capacity = _defaultStore.Capacity,
+                IsEmpty = _defaultStore.IsEmpty,
+                IsFull = _defaultStore.IsFull,
+                DiscardedEvents = _discardedEventsCount
+            },
+            FallbackStore = new StoreMetrics
+            {
+                Count = _fallbackStore.Count,
+                Capacity = _fallbackStore.Capacity,
+                IsEmpty = _fallbackStore.IsEmpty,
+                IsFull = _fallbackStore.IsFull,
+                DiscardedEvents = _discardedEventsCount
+            }
+        };
     }
+}
+
+public sealed record PaymentEvent
+{
+    public required double Amount { get; init; }
+    public required DateTime RequestedAt { get; init; }
 }
 
 
 [JsonSerializable(typeof(PaymentRecord))]
+[JsonSerializable(typeof(PaymentEvent))]
 [JsonSerializable(typeof(SummaryResponse))]
 [JsonSerializable(typeof(SummaryOrigin))]
+[JsonSerializable(typeof(MetricsResponse))]
+[JsonSerializable(typeof(StoreMetrics))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 public partial class DatabaseJsonSerializerContext : JsonSerializerContext { }
