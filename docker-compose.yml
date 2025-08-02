@@ -1,5 +1,5 @@
 x-api_template: &api_template
-  image: daniloneto/rinha-gateway:1.2.0
+  image: daniloneto/rinha-gateway:1.4.0
   volumes:
     - sockets:/tmp:rw
     - sockets:/sockets:rw
@@ -26,11 +26,11 @@ services:
     depends_on:
       - rinha-gateway-1
       - rinha-gateway-2
-    deploy:
+    deploy:      
       resources:
-        limits:
-          cpus: "0.25"  
-          memory: "70MB"
+          limits:
+            cpus: "0.25"  
+            memory: "70MB"
 
   rinha-gateway-1:
     <<: *api_template
@@ -46,7 +46,7 @@ services:
   rinha-gateway-2:
     <<: *api_template
     container_name: rinha-gateway-2
-    hostname: rinha-gateway-2
+    hostname: rinha-gateway-2    
     environment:
       - SOCKET_PATH=/tmp/gateway-2.sock
     ports:
@@ -55,7 +55,7 @@ services:
       - rinha-db
 
   rinha-db:
-    image: daniloneto/rinha-database:1.2.0
+    image: daniloneto/rinha-database:1.4.0
     container_name: rinha-db
     volumes:
       - sockets:/sockets:rw
