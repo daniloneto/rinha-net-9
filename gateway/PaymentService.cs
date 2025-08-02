@@ -26,25 +26,22 @@ namespace Gateway
         private readonly int _retryBaseDelayMs;
         private readonly int _retryMaxDelayMs;
         private readonly int _healthCheckIntervalSeconds;
-
-
-        public PaymentService(
+        private readonly int _maxRetriesBeforeFallback;
+                public PaymentService(
             ProcessorClient client,
             Repository repository)
         {
             _client = client;
             _repository = repository;
             _workerMultiplier = int.TryParse(Environment.GetEnvironmentVariable("WorkerMultiplier"), out var wm) ? wm : 1;
-            _retryBaseDelayMs = int.TryParse(Environment.GetEnvironmentVariable("RetryBaseDelayMs"), out var rbd) ? rbd : 200;
-            _retryMaxDelayMs = int.TryParse(Environment.GetEnvironmentVariable("RetryMaxDelayMs"), out var rmd) ? rmd : 1000;
+            
+            
+            _retryBaseDelayMs = 25;
+            _retryMaxDelayMs = 200;
+            _maxRetriesBeforeFallback = 5;
+            
             _healthCheckIntervalSeconds = int.TryParse(Environment.GetEnvironmentVariable("HealthCheckIntervalSeconds"), out var hcis) ? hcis : 2;
-
-            // Log dos valores das variáveis de ambiente
-            Console.WriteLine($"[PaymentService] WorkerMultiplier={_workerMultiplier}");
-            Console.WriteLine($"[PaymentService] RetryBaseDelayMs={_retryBaseDelayMs}");
-            Console.WriteLine($"[PaymentService] RetryMaxDelayMs={_retryMaxDelayMs}");
-            Console.WriteLine($"[PaymentService] HealthCheckIntervalSeconds={_healthCheckIntervalSeconds}");
-
+ 
             _channel = Channel.CreateUnbounded<PaymentRequest>(new UnboundedChannelOptions
             {
                 SingleReader = false,
@@ -110,8 +107,9 @@ namespace Gateway
                     {
                         var processorRequest = request.ToProcessor();
                         bool success = false;
-                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);
-                        if (_defaultHealth)
+                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);                        
+                        
+                        if (_defaultHealth && retryCount < _maxRetriesBeforeFallback)
                         {
                             success = await _client.CaptureDefaultAsync(processorRequest);
                             if (success)
@@ -119,21 +117,20 @@ namespace Gateway
                                 _ = _repository.InsertDefaultAsync(processorRequest);
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
                             }
-                        }
-                        if (!success && _fallbackHealth)
+                        }                      
+                        else if (!success && _fallbackHealth && retryCount >= _maxRetriesBeforeFallback)
                         {
                             success = await _client.CaptureFallbackAsync(processorRequest);
                             if (success)
                             {
                                 _ = _repository.InsertFallbackAsync(processorRequest);
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
-                            }
-                        }
+                            }                        }
                         if (!success)
                         {
                             retryCount++;
                             _retryCounts[request.CorrelationId] = retryCount;
-                            int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs); // Exponential backoff, max configurable
+                            int delayMs = Math.Min(_retryBaseDelayMs * (1 << Math.Min(retryCount, 5)), _retryMaxDelayMs);
                             await Task.Delay(delayMs);
                             _queue.Enqueue(request);
                         }
@@ -162,8 +159,9 @@ namespace Gateway
                     {
                         var processorRequest = request.ToProcessor();
                         bool success = false;
-                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);
-                        if (_defaultHealth)
+                        int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);                        
+                        
+                        if (_defaultHealth && retryCount < _maxRetriesBeforeFallback)
                         {
                             success = await _client.CaptureDefaultAsync(processorRequest);
                             if (success)
@@ -172,15 +170,15 @@ namespace Gateway
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
                             }
                         }
-                        if (!success && _fallbackHealth)
+                        
+                        else if (!success && _fallbackHealth && retryCount >= _maxRetriesBeforeFallback)
                         {
                             success = await _client.CaptureFallbackAsync(processorRequest);
                             if (success)
                             {
                                 _ = _repository.InsertFallbackAsync(processorRequest);
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
-                            }
-                        }
+                            }                        }
                         if (!success)
                         {
                             retryCount++;
