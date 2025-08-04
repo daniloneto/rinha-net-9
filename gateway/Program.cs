@@ -71,7 +71,7 @@ builder.WebHost.ConfigureKestrel(options =>
 
 var maxConnectionsPerServer = int.TryParse(Environment.GetEnvironmentVariable("MaxConnectionsPerServer"), out var mcs) ? mcs : 256;
 var pooledConnectionLifetimeMinutes = int.TryParse(Environment.GetEnvironmentVariable("PooledConnectionLifetimeMinutes"), out var pclm) ? pclm : 5;
-var dbTimeoutSeconds = 5;
+var dbTimeoutSeconds = 1; // Timeout mais agressivo para database local
 
 var httpClient = new HttpClient(new SocketsHttpHandler
 {
