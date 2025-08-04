@@ -16,9 +16,8 @@
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
-
   <ItemGroup>
-    <PackageReference Include="LockFree.EventStore" Version="0.1.2" />
+    <PackageReference Include="LockFree.EventStore" Version="1.0" />
   </ItemGroup>
 
 </Project>

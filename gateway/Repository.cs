@@ -65,9 +65,7 @@ public class Repository
         {            
             return false;
         }
-    }
-
-    public virtual async Task<SummaryResponse> GetSummaryAsync(DateTime? from, DateTime? to)
+    }    public virtual async Task<SummaryResponse> GetSummaryAsync(DateTime? from, DateTime? to)
     {
         try
         {
@@ -85,9 +83,9 @@ public class Repository
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsStringAsync();
-                    var summary = JsonSerializer.Deserialize(content, AppJsonSerializerContext.Default.SummaryResponse);
-                    if (summary != null)
-                        return summary;
+                    var internalSummary = JsonSerializer.Deserialize(content, AppJsonSerializerContext.Default.DatabaseSummaryResponse);
+                    if (internalSummary != null)
+                        return internalSummary.ToExternal();
                 }
                 await Task.Delay(100);
             }

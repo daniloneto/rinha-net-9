@@ -81,11 +81,7 @@ app.MapGet("/summary", (DateTime? from, DateTime? to) =>
     if (!from.HasValue || !to.HasValue)
     {
         return Results.Ok();
-    }
-
-    var (defaultSummary, fallbackSummary) = paymentService.GetSummary(from, to);
-
-    var response = new SummaryResponse
+    }    var (defaultSummary, fallbackSummary) = paymentService.GetSummary(from, to);    var response = new DatabaseSummaryResponse
     {
         Default = defaultSummary,
         Fallback = fallbackSummary
@@ -110,28 +106,28 @@ await app.RunAsync();
 
 public sealed record PaymentRecord
 {
-    [JsonPropertyName("amount")]
+    [JsonPropertyName("a")]
     public required double Amount { get; init; }
 
-    [JsonPropertyName("requestedAt")]
+    [JsonPropertyName("t")]
     public required DateTime RequestedAt { get; init; }
 }
 
-public sealed record SummaryResponse
+public sealed record DatabaseSummaryResponse
 {
-    [JsonPropertyName("default")]
-    public required SummaryOrigin Default { get; init; }
+    [JsonPropertyName("d")]
+    public required DatabaseSummaryOrigin Default { get; init; }
 
-    [JsonPropertyName("fallback")]
-    public required SummaryOrigin Fallback { get; init; }
+    [JsonPropertyName("f")]
+    public required DatabaseSummaryOrigin Fallback { get; init; }
 }
 
-public sealed record SummaryOrigin
+public sealed record DatabaseSummaryOrigin
 {
-    [JsonPropertyName("totalRequests")]
+    [JsonPropertyName("c")]
     public required int TotalRequests { get; init; }
 
-    [JsonPropertyName("totalAmount")]
+    [JsonPropertyName("s")]
     public required double TotalAmount { get; init; }
 }
 
@@ -160,6 +156,15 @@ public sealed record StoreMetrics
 
     [JsonPropertyName("discardedEvents")]
     public required long DiscardedEvents { get; init; }
+
+    [JsonPropertyName("totalAppended")]
+    public required long TotalAppended { get; init; }
+
+    [JsonPropertyName("appendsPerSecond")]
+    public required double AppendsPerSecond { get; init; }
+
+    [JsonPropertyName("lastAppendTime")]
+    public required DateTime? LastAppendTime { get; init; }
 }
 
 public sealed class PaymentService
@@ -167,19 +172,15 @@ public sealed class PaymentService
     private EventStore<PaymentEvent> _defaultStore;
     private EventStore<PaymentEvent> _fallbackStore;
     private readonly int _maxCapacity;
-    private static long _discardedEventsCount = 0;
 
     public PaymentService(int maxCapacity)
     {
-        _maxCapacity = maxCapacity;
-        var options = new EventStoreOptions<PaymentEvent>
+        _maxCapacity = maxCapacity;        var options = new EventStoreOptions<PaymentEvent>
         {
             Capacity = maxCapacity,
             Partitions = 8,
-            OnEventDiscarded = evt =>
-            {
-                Interlocked.Increment(ref _discardedEventsCount);
-            }
+            TimestampSelector = new PaymentEventTimestampSelector(),
+            EnableFalseSharingProtection = true
         };
 
         _defaultStore = new EventStore<PaymentEvent>(options);
@@ -202,9 +203,7 @@ public sealed class PaymentService
         // A EventStore tem descarte FIFO automático, então sempre retornamos true
         // se conseguirmos adicionar o evento
         return store.TryAppend(paymentEvent);
-    }
-
-    public (SummaryOrigin Default, SummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
+    }    public (DatabaseSummaryOrigin Default, DatabaseSummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
     {
         var fromUtc = from!.Value.ToUniversalTime();
         var toUtc = to!.Value.ToUniversalTime();
@@ -214,21 +213,14 @@ public sealed class PaymentService
 
         return (defaultSummary, fallbackSummary);
     }
-    private SummaryOrigin CalculateSummary(EventStore<PaymentEvent> store, DateTime from, DateTime to)
+    private DatabaseSummaryOrigin CalculateSummary(EventStore<PaymentEvent> store, DateTime from, DateTime to)
     {
+        var totalRequests = store.CountEvents(from, to);
+        var totalAmount = store.Sum(evt => evt.Amount, from, to);
 
-        var snapshot = store.Snapshot();
-
-
-        var filteredEvents = snapshot.Where(evt =>
-            evt.RequestedAt >= from && evt.RequestedAt <= to).ToList();
-
-        var totalRequests = filteredEvents.Count;
-        var totalAmount = filteredEvents.Sum(evt => evt.Amount);
-
-        return new SummaryOrigin
+        return new DatabaseSummaryOrigin
         {
-            TotalRequests = totalRequests,
+            TotalRequests = (int)totalRequests,
             TotalAmount = Math.Round(totalAmount, 2)
         };
     }
@@ -237,9 +229,11 @@ public sealed class PaymentService
         // Usando o novo método Clear() da v0.1.2!
         _defaultStore.Clear();
         _fallbackStore.Clear();
-    }
-    public MetricsResponse GetMetrics()
+    }    public MetricsResponse GetMetrics()
     {
+        var defaultStats = _defaultStore.Statistics;
+        var fallbackStats = _fallbackStore.Statistics;
+
         return new MetricsResponse
         {
             DefaultStore = new StoreMetrics
@@ -248,7 +242,10 @@ public sealed class PaymentService
                 Capacity = _defaultStore.Capacity,
                 IsEmpty = _defaultStore.IsEmpty,
                 IsFull = _defaultStore.IsFull,
-                DiscardedEvents = _discardedEventsCount
+                DiscardedEvents = defaultStats.TotalDiscarded,
+                TotalAppended = defaultStats.TotalAppended,
+                AppendsPerSecond = defaultStats.AppendsPerSecond,
+                LastAppendTime = defaultStats.LastAppendTime
             },
             FallbackStore = new StoreMetrics
             {
@@ -256,7 +253,10 @@ public sealed class PaymentService
                 Capacity = _fallbackStore.Capacity,
                 IsEmpty = _fallbackStore.IsEmpty,
                 IsFull = _fallbackStore.IsFull,
-                DiscardedEvents = _discardedEventsCount
+                DiscardedEvents = fallbackStats.TotalDiscarded,
+                TotalAppended = fallbackStats.TotalAppended,
+                AppendsPerSecond = fallbackStats.AppendsPerSecond,
+                LastAppendTime = fallbackStats.LastAppendTime
             }
         };
     }
@@ -268,11 +268,17 @@ public sealed record PaymentEvent
     public required DateTime RequestedAt { get; init; }
 }
 
+// Implementação do TimestampSelector
+public class PaymentEventTimestampSelector : IEventTimestampSelector<PaymentEvent>
+{
+    public DateTime GetTimestamp(PaymentEvent eventData) => eventData.RequestedAt;
+}
+
 
 [JsonSerializable(typeof(PaymentRecord))]
 [JsonSerializable(typeof(PaymentEvent))]
-[JsonSerializable(typeof(SummaryResponse))]
-[JsonSerializable(typeof(SummaryOrigin))]
+[JsonSerializable(typeof(DatabaseSummaryResponse))]
+[JsonSerializable(typeof(DatabaseSummaryOrigin))]
 [JsonSerializable(typeof(MetricsResponse))]
 [JsonSerializable(typeof(StoreMetrics))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
