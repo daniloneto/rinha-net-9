@@ -5,6 +5,7 @@ namespace Gateway;
 [JsonSerializable(typeof(PaymentRequest))]
 [JsonSerializable(typeof(PaymentProcessorRequest))]
 [JsonSerializable(typeof(DatabasePaymentRequest))]
+[JsonSerializable(typeof(DatabasePaymentRequest[]))]
 [JsonSerializable(typeof(SummaryResponse))]
 [JsonSerializable(typeof(SummaryOrigin))]
 [JsonSerializable(typeof(DatabaseSummaryResponse))]

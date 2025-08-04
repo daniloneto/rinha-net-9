@@ -68,9 +68,20 @@ var paymentService = new PaymentService(maxCapacity);
 app.MapPost("/payments/default", (PaymentRecord payment) => ProcessPayment(payment, isFallback: false));
 app.MapPost("/payments/fallback", (PaymentRecord payment) => ProcessPayment(payment, isFallback: true));
 
+// Endpoints de batch para melhor performance
+app.MapPost("/payments/batch/default", (PaymentRecord[] payments) => ProcessPaymentsBatch(payments, isFallback: false));
+app.MapPost("/payments/batch/fallback", (PaymentRecord[] payments) => ProcessPaymentsBatch(payments, isFallback: true));
+
 IResult ProcessPayment(PaymentRecord payment, bool isFallback)
 {
     return paymentService.AddPayment(payment, isFallback)
+        ? Results.Created()
+        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+}
+
+IResult ProcessPaymentsBatch(PaymentRecord[] payments, bool isFallback)
+{
+    return paymentService.AddPaymentsBatch(payments, isFallback)
         ? Results.Created()
         : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 }
@@ -185,11 +196,8 @@ public sealed class PaymentService
 
         _defaultStore = new EventStore<PaymentEvent>(options);
         _fallbackStore = new EventStore<PaymentEvent>(options);
-    }
-
-    public bool AddPayment(PaymentRecord payment, bool isFallback)
+    }    public bool AddPayment(PaymentRecord payment, bool isFallback)
     {
-
         var paymentEvent = new PaymentEvent
         {
             Amount = payment.Amount,
@@ -203,7 +211,23 @@ public sealed class PaymentService
         // A EventStore tem descarte FIFO automático, então sempre retornamos true
         // se conseguirmos adicionar o evento
         return store.TryAppend(paymentEvent);
-    }    public (DatabaseSummaryOrigin Default, DatabaseSummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
+    }
+
+    // Método experimental para testar batch na v1.0
+    public bool AddPaymentsBatch(IEnumerable<PaymentRecord> payments, bool isFallback)
+    {
+        var paymentEvents = payments.Select(payment => new PaymentEvent
+        {
+            Amount = payment.Amount,
+            RequestedAt = payment.RequestedAt.Kind == DateTimeKind.Utc
+                ? payment.RequestedAt
+                : payment.RequestedAt.ToUniversalTime()
+        }).ToArray();
+
+        var store = isFallback ? _fallbackStore : _defaultStore;        // TryAppendBatch existe na v1.0 e retorna int (quantidade adicionada)
+        int addedCount = store.TryAppendBatch(paymentEvents);
+        return addedCount == paymentEvents.Length; // Sucesso se todos foram adicionados
+    }public (DatabaseSummaryOrigin Default, DatabaseSummaryOrigin Fallback) GetSummary(DateTime? from, DateTime? to)
     {
         var fromUtc = from!.Value.ToUniversalTime();
         var toUtc = to!.Value.ToUniversalTime();
@@ -276,6 +300,7 @@ public class PaymentEventTimestampSelector : IEventTimestampSelector<PaymentEven
 
 
 [JsonSerializable(typeof(PaymentRecord))]
+[JsonSerializable(typeof(PaymentRecord[]))]
 [JsonSerializable(typeof(PaymentEvent))]
 [JsonSerializable(typeof(DatabaseSummaryResponse))]
 [JsonSerializable(typeof(DatabaseSummaryOrigin))]

@@ -32,9 +32,7 @@ public class Repository
         {           
             return await Task.FromResult(false);
         }
-    }
-
-    public virtual async Task<bool> InsertFallbackAsync(PaymentProcessorRequest request)
+    }    public virtual async Task<bool> InsertFallbackAsync(PaymentProcessorRequest request)
     {
         try
         {
@@ -46,6 +44,46 @@ public class Repository
             var json = JsonSerializer.Serialize(dbRequest, AppJsonSerializerContext.Default.DatabasePaymentRequest);
             using var content = new StringContent(json, Encoding.UTF8, "application/json");
             await _httpClient.PostAsync("/payments/fallback", content);
+            return true;
+        }
+        catch
+        {           
+            return await Task.FromResult(false);
+        }
+    }    public virtual async Task<bool> InsertDefaultBatchAsync(IEnumerable<PaymentProcessorRequest> requests)
+    {
+        try
+        {
+            var dbRequests = requests.Select(request => new DatabasePaymentRequest
+            {
+                Amount = request.Amount,
+                RequestedAt = request.RequestedAt
+            }).ToArray();
+            
+            var json = JsonSerializer.Serialize(dbRequests, typeof(DatabasePaymentRequest[]), AppJsonSerializerContext.Default);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
+            await _httpClient.PostAsync("/payments/batch/default", content);
+            return true;
+        }
+        catch
+        {           
+            return await Task.FromResult(false);
+        }
+    }
+
+    public virtual async Task<bool> InsertFallbackBatchAsync(IEnumerable<PaymentProcessorRequest> requests)
+    {
+        try
+        {
+            var dbRequests = requests.Select(request => new DatabasePaymentRequest
+            {
+                Amount = request.Amount,
+                RequestedAt = request.RequestedAt
+            }).ToArray();
+            
+            var json = JsonSerializer.Serialize(dbRequests, typeof(DatabasePaymentRequest[]), AppJsonSerializerContext.Default);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
+            await _httpClient.PostAsync("/payments/batch/fallback", content);
             return true;
         }
         catch
