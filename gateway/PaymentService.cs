@@ -24,9 +24,11 @@ namespace Gateway
         private readonly int _retryBaseDelayMs;
         private readonly int _retryMaxDelayMs;
         private readonly int _healthCheckIntervalSeconds;
-        private readonly int _maxRetriesBeforeFallback;        // Batching variables
-        private readonly List<PaymentProcessorRequest> _defaultBatch = new();
-        private readonly List<PaymentProcessorRequest> _fallbackBatch = new();
+        private readonly int _maxRetriesBeforeFallback;        // Batching variables - lock-free para melhor performance
+        private readonly ConcurrentQueue<PaymentProcessorRequest> _defaultBatch = new();
+        private readonly ConcurrentQueue<PaymentProcessorRequest> _fallbackBatch = new();
+        private volatile int _defaultBatchCount = 0;
+        private volatile int _fallbackBatchCount = 0;
         private readonly Timer _batchTimer;
         private readonly int _batchSize;
         private readonly int _batchTimeoutMs;
@@ -109,13 +111,13 @@ namespace Gateway
                         var processorRequest = request.ToProcessor();
                         bool success = false;
                         int retryCount = _retryCounts.GetOrAdd(request.CorrelationId, 0);                        
-                        
-                        if (_defaultHealth && retryCount < _maxRetriesBeforeFallback)
+                          if (_defaultHealth && retryCount < _maxRetriesBeforeFallback)
                         {
                             success = await _client.CaptureDefaultAsync(processorRequest);
                             if (success)
                             {
-                                _ = _repository.InsertDefaultAsync(processorRequest);
+                                // Usar batching também no dispatcher para consistência
+                                AddToBatch(processorRequest, isFallback: false);
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
                             }
                         }                      
@@ -124,7 +126,8 @@ namespace Gateway
                             success = await _client.CaptureFallbackAsync(processorRequest);
                             if (success)
                             {
-                                _ = _repository.InsertFallbackAsync(processorRequest);
+                                // Usar batching também no dispatcher para consistência
+                                AddToBatch(processorRequest, isFallback: true);
                                 _retryCounts.TryRemove(request.CorrelationId, out _);
                             }                        }
                         if (!success)
@@ -192,41 +195,50 @@ namespace Gateway
                         }
                     }
                 });            }
-        }
-
-        private void AddToBatch(PaymentProcessorRequest request, bool isFallback)
+        }        private void AddToBatch(PaymentProcessorRequest request, bool isFallback)
         {
-            lock (isFallback ? _fallbackBatch : _defaultBatch)
+            // Lock-free enqueue
+            if (isFallback)
             {
-                var batch = isFallback ? _fallbackBatch : _defaultBatch;
-                batch.Add(request);
+                _fallbackBatch.Enqueue(request);
+                var count = Interlocked.Increment(ref _fallbackBatchCount);
                 
-                // Flush if batch is full
-                if (batch.Count >= _batchSize)
+                // Flush apenas se necessário, sem Task.Run overhead
+                if (count >= _batchSize)
                 {
-                    _ = Task.Run(() => FlushBatch(isFallback));
+                    _ = FlushBatch(isFallback);
                 }
             }
-        }
-
-        private void FlushBatches(object? state)
-        {
-            _ = Task.Run(() => FlushBatch(isFallback: false));
-            _ = Task.Run(() => FlushBatch(isFallback: true));
-        }
-
-        private async Task FlushBatch(bool isFallback)
-        {
-            List<PaymentProcessorRequest> batchToFlush;
-            
-            lock (isFallback ? _fallbackBatch : _defaultBatch)
+            else
             {
-                var batch = isFallback ? _fallbackBatch : _defaultBatch;
-                if (batch.Count == 0) return;
+                _defaultBatch.Enqueue(request);
+                var count = Interlocked.Increment(ref _defaultBatchCount);
                 
-                batchToFlush = new List<PaymentProcessorRequest>(batch);
-                batch.Clear();
+                if (count >= _batchSize)
+                {
+                    _ = FlushBatch(isFallback);
+                }
             }
+        }        private void FlushBatches(object? state)
+        {
+            // Execução direta sem Task.Run overhead
+            _ = FlushBatch(isFallback: false);
+            _ = FlushBatch(isFallback: true);
+        }        private async Task FlushBatch(bool isFallback)
+        {
+            var batch = isFallback ? _fallbackBatch : _defaultBatch;
+            var batchCount = isFallback ? ref _fallbackBatchCount : ref _defaultBatchCount;
+            
+            var batchToFlush = new List<PaymentProcessorRequest>();
+            
+            // Dequeue sem lock - mais eficiente
+            while (batchToFlush.Count < _batchSize && batch.TryDequeue(out var item))
+            {
+                batchToFlush.Add(item);
+                Interlocked.Decrement(ref batchCount);
+            }
+            
+            if (batchToFlush.Count == 0) return;
 
             try
             {
@@ -237,7 +249,7 @@ namespace Gateway
             }
             catch
             {
-                // Em caso de erro, volta para inserção individual como fallback
+                // Fallback para inserção individual
                 foreach (var request in batchToFlush)
                 {
                     try

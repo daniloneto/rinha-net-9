@@ -10,7 +10,7 @@ x-api_template: &api_template
     resources:
       limits:
         cpus: "0.5"     
-        memory: "120MB" 
+        memory: "110MB" 
 
 services:
   nginx:
@@ -67,7 +67,7 @@ services:
       resources:
         limits:
           cpus: "0.25"  
-          memory: "40MB" 
+          memory: "60MB" 
 
 networks:
   backend:
