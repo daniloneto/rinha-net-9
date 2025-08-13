@@ -50,7 +50,7 @@ docker-compose up --build
 ## Performance
 
 <p align="center">
-  <img src="k6.png" alt="Resultados de Performance" width="700">
+  <img src="diagrama1.png" alt="Resultados de Performance" width="700">
 </p>
 
 ### Endpoints Disponíveis
@@ -69,5 +69,6 @@ docker-compose up --build
 ## Licença
 
 Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
+
 
 
