@@ -47,7 +47,7 @@ docker-compose up --build
 - **Database**: Gerencia o armazenamento e consulta dos dados usando LockFree.EventStore.
 - **NGINX**: Proxy reverso para balanceamento de carga e roteamento.
 
-## Performance
+## Diagrama
 
 <p align="center">
   <img src="diagrama1.png" alt="Resultados de Performance" width="700">
@@ -69,6 +69,7 @@ docker-compose up --build
 ## Licença
 
 Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
+
 
 
 
